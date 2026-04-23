@@ -1,3 +1,10 @@
-pytorch >= 1.0.0
-numpy >= 1.15.4 #For data preparation process
-scikit-learn >= 0.20.2 #For AUC-PR
+--extra-index-url https://download.pytorch.org/whl/cu121
+
+# CUDA-compatible PyTorch build for drivers like 535.x (CUDA 12.2 capability)
+torch==2.3.1+cu121
+
+# NumPy 2.x removed np.in1d, which this codebase still uses
+numpy==1.26.4
+
+# Used for AUC-PR evaluation metric
+scikit-learn==1.8.0

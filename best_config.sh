@@ -1,3 +1,19 @@
+# Train format:
+bash run.sh train \
+    MODEL \
+    DATASET \
+    GPU_DEVICE \
+    SAVE_ID \
+    BATCH_SIZE \
+    NEGATIVE_SAMPLE_SIZE \
+    HIDDEN_DIM \
+    GAMMA \
+    ALPHA \
+    LEARNING_RATE \
+    MAX_STEPS \
+    TEST_BATCH_SIZE \
+    [EXTRA_FLAGS]
+#
 # Best Configuration for RotatE
 #
 bash run.sh train RotatE FB15k 0 0 1024 256 1000 24.0 1.0 0.0001 150000 16 -de
@@ -48,4 +64,10 @@ bash run.sh train DistMult wn18rr 0 0 512 1024 1000 200.0 1.0 0.002 80000 8 -r 0
 bash run.sh train DistMult countries_S1 0 0 512 64 2000 1.0 1.0 0.000002 40000 8 -r 0.0005 --countries
 bash run.sh train DistMult countries_S2 0 0 512 64 2000 1.0 1.0 0.000002 40000 8 -r 0.0005 --countries
 bash run.sh train DistMult countries_S3 0 0 512 64 2000 1.0 1.0 0.000002 40000 8 -r 0.0005 --countries
+#
+# Valid format:
+bash run.sh valid MODEL DATASET GPU_DEVICE SAVE_ID
+#
+# Test format:
+bash run.sh test MODEL DATASET GPU_DEVICE SAVE_ID
 #
