@@ -9,6 +9,25 @@ import torch
 
 from torch.utils.data import Dataset
 
+
+def read_labeled_triple(file_path, entity2id, relation2id):
+    '''
+    Read labeled triples and map them into ids.
+    Expected format per line: head relation tail label
+    '''
+    triples = []
+    with open(file_path) as fin:
+        for line_id, line in enumerate(fin, start=1):
+            parts = line.strip().split()
+            if len(parts) != 4:
+                raise ValueError(
+                    'Invalid labeled triple format in %s at line %d' % (file_path, line_id)
+                )
+
+            h, r, t, label = parts
+            triples.append((entity2id[h], relation2id[r], entity2id[t], int(label)))
+    return triples
+
 class TrainDataset(Dataset):
     def __init__(self, triples, nentity, nrelation, negative_sample_size, mode):
         self.len = len(triples)

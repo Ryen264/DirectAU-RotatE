@@ -14,6 +14,7 @@ bash run.sh train \
     TEST_BATCH_SIZE \
     [EXTRA_FLAGS]
 #
+bash run.sh train RotatE wn18rr 0 0 512 1024 500 6.0 0.5 0.00005 80000 8 -de
 # Best Configuration for RotatE
 #
 bash run.sh train RotatE FB15k 0 0 1024 256 1000 24.0 1.0 0.0001 150000 16 -de
@@ -71,3 +72,8 @@ bash run.sh valid MODEL DATASET GPU_DEVICE SAVE_ID
 # Test format:
 bash run.sh test MODEL DATASET GPU_DEVICE SAVE_ID
 #
+# Config format:
+bash run.sh config_MODEL_DATASET.yaml
+# Example:
+bash run.sh config_RotatE_wn18rr.yaml
+# Config files are stored in configs/

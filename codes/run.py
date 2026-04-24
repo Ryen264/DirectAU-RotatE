@@ -1,43 +1,3 @@
-from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score, average_precision_score
-
-# Evaluate triple classification metrics
-def evaluate_triple_classification(model, triples_with_label, batch_size=1024, use_cuda=False):
-    '''
-    Evaluate triple classification metrics: Acc, Prec, Rec, F1, PR-AUC, ROC-AUC
-    triples_with_label: list of (h, r, t, label)
-    '''
-    y_true = []
-    y_score = []
-    model.eval()
-    with torch.no_grad():
-        for i in range(0, len(triples_with_label), batch_size):
-            batch = triples_with_label[i:i+batch_size]
-            h = torch.LongTensor([x[0] for x in batch])
-            r = torch.LongTensor([x[1] for x in batch])
-            t = torch.LongTensor([x[2] for x in batch])
-            label = [x[3] for x in batch]
-            if use_cuda:
-                h = h.cuda()
-                r = r.cuda()
-                t = t.cuda()
-            # Score: higher = more likely positive
-            score = model.forward(h, r, t, mode=None).cpu().numpy()
-            y_score.extend(score.tolist())
-            y_true.extend(label)
-    # Convert to numpy
-    y_true = np.array(y_true)
-    y_score = np.array(y_score)
-    # Use 0 threshold for binary prediction (score > 0 => 1)
-    y_pred = (y_score > 0).astype(int)
-    metrics = {
-        'Acc': accuracy_score(y_true, y_pred),
-        'Prec': precision_score(y_true, y_pred, zero_division=0),
-        'Rec': recall_score(y_true, y_pred, zero_division=0),
-        'F1': f1_score(y_true, y_pred, zero_division=0),
-        'PR-AUC': average_precision_score(y_true, y_score),
-        'ROC-AUC': roc_auc_score(y_true, y_score)
-    }
-    return metrics
 #!/usr/bin/python3
 
 from __future__ import absolute_import
@@ -49,6 +9,8 @@ import json
 import logging
 import os
 import random
+import time
+from datetime import datetime
 
 import numpy as np
 import torch
@@ -56,9 +18,11 @@ import torch
 from torch.utils.data import DataLoader
 
 from model import KGEModel
+from metrics import classification_metrics
 
 from dataloader import TrainDataset
 from dataloader import BidirectionalOneShotIterator
+from dataloader import read_labeled_triple
 
 def parse_args(args=None):
     parser = argparse.ArgumentParser(
@@ -122,40 +86,137 @@ def override_config(args):
     if args.data_path is None:
         args.data_path = argparse_dict['data_path']
     args.model = argparse_dict['model']
-    args.double_entity_embedding = argparse_dict['double_entity_embedding']
-    args.double_relation_embedding = argparse_dict['double_relation_embedding']
+    # Fallbacks support older checkpoints that may not store these fields.
+    args.double_entity_embedding = argparse_dict.get(
+        'double_entity_embedding',
+        args.model in ['RotatE', 'ComplEx']
+    )
+    args.double_relation_embedding = argparse_dict.get(
+        'double_relation_embedding',
+        args.model == 'ComplEx'
+    )
     args.hidden_dim = argparse_dict['hidden_dim']
     args.test_batch_size = argparse_dict['test_batch_size']
+
+
+def get_dataset_name(args):
+    return os.path.basename(os.path.normpath(args.data_path))
+
+
+def resolve_labeled_data_path(args):
+    dataset_name = get_dataset_name(args)
+    if dataset_name.endswith('_w_label') or dataset_name.endswith('_w_labels'):
+        if os.path.exists(args.data_path):
+            return args.data_path
+
+    dataset_root = os.path.dirname(os.path.normpath(args.data_path))
+    candidates = [
+        os.path.join(dataset_root, dataset_name + '_w_labels'),
+        os.path.join(dataset_root, dataset_name + '_w_label'),
+    ]
+
+    for path in candidates:
+        if os.path.exists(path):
+            return path
+    return None
+
+
+def format_link_prediction_metrics(metrics):
+    formatted = {}
+    if 'MR' in metrics:
+        formatted['MR'] = metrics['MR']
+    if 'MRR' in metrics:
+        formatted['MRR'] = metrics['MRR']
+    if 'HITS@1' in metrics:
+        formatted['Hit@1'] = metrics['HITS@1']
+    if 'HITS@3' in metrics:
+        formatted['Hit@3'] = metrics['HITS@3']
+    if 'HITS@10' in metrics:
+        formatted['Hit@10'] = metrics['HITS@10']
+    if len(formatted) == 0:
+        return metrics
+    return formatted
+
+
+def evaluate_triple_classification(model, labeled_triples, args):
+    if labeled_triples is None or len(labeled_triples) == 0:
+        return None
+
+    model.eval()
+    scores = []
+    predictions = []
+    labels = []
+
+    batch_size = max(1, args.test_batch_size)
+
+    with torch.no_grad():
+        for start in range(0, len(labeled_triples), batch_size):
+            chunk = labeled_triples[start:start + batch_size]
+            sample = torch.LongTensor([(h, r, t) for h, r, t, _ in chunk])
+            if args.cuda:
+                sample = sample.cuda()
+
+            chunk_scores = model(sample).view(-1).cpu().numpy().tolist()
+            scores.extend(chunk_scores)
+
+            for (_, _, _, label), score in zip(chunk, chunk_scores):
+                labels.append(label)
+                predictions.append(1 if score > 0 else 0)
+
+    metrics = classification_metrics(predictions, labels, scores)
+    return {
+        'Accuracy': metrics['accuracy'],
+        'Precision': metrics['precision'],
+        'Recall': metrics['recall'],
+        'F1 Score': metrics['f1'],
+        'PR-AUC': metrics['pr_auc'],
+        'ROC-AUC': metrics['roc_auc'],
+    }
     
-def save_model(model, optimizer, save_variable_list, args):
+def save_model(model, optimizer, save_variable_list, args, checkpoint_dir=None, model_filename=None):
     '''
     Save the parameters of the model and the optimizer,
     as well as some other variables such as step and learning_rate
     '''
     
+    checkpoint_dir = checkpoint_dir or args.save_path
+    model_filename = model_filename or '%s_%s.mdl' % (args.run_timestamp, args.model)
+
     argparse_dict = vars(args)
-    with open(os.path.join(args.save_path, 'config.json'), 'w') as fjson:
+    os.makedirs(checkpoint_dir, exist_ok=True)
+    with open(os.path.join(checkpoint_dir, 'config.json'), 'w') as fjson:
         json.dump(argparse_dict, fjson)
 
     torch.save({
         **save_variable_list,
         'model_state_dict': model.state_dict(),
         'optimizer_state_dict': optimizer.state_dict()},
-        os.path.join(args.save_path, 'checkpoint')
+        os.path.join(checkpoint_dir, 'checkpoint')
     )
     
     entity_embedding = model.entity_embedding.detach().cpu().numpy()
     np.save(
-        os.path.join(args.save_path, 'entity_embedding'), 
+        os.path.join(checkpoint_dir, 'entity_embedding'), 
         entity_embedding
     )
     
     relation_embedding = model.relation_embedding.detach().cpu().numpy()
     np.save(
-        os.path.join(args.save_path, 'relation_embedding'), 
+        os.path.join(checkpoint_dir, 'relation_embedding'), 
         relation_embedding
     )
 
+    model_file = os.path.join(
+        args.model_save_path,
+        model_filename
+    )
+    torch.save(
+        {
+            **save_variable_list,
+            'model_state_dict': model.state_dict(),
+        },
+        model_file
+    )
 
 def read_triple(file_path, entity2id, relation2id):
     '''
@@ -187,10 +248,11 @@ def set_logger(args):
     Write logs to checkpoint and console
     '''
 
-    if args.do_train:
-        log_file = os.path.join(args.save_path or args.init_checkpoint, 'train.log')
-    else:
-        log_file = os.path.join(args.save_path or args.init_checkpoint, 'test.log')
+    os.makedirs(args.log_save_path, exist_ok=True)
+    log_file = os.path.join(
+        args.log_save_path,
+        '%s_%s.log' % (args.run_timestamp, args.model)
+    )
 
     logging.basicConfig(
         format='%(asctime)s %(levelname)-8s %(message)s',
@@ -214,6 +276,9 @@ def log_metrics(mode, step, metrics):
         
         
 def main(args):
+    total_start_time = time.time()
+    train_start_time = None
+
     if (not args.do_train) and (not args.do_valid) and (not args.do_test):
         raise ValueError('one of train/val/test mode must be choosed.')
     
@@ -224,9 +289,20 @@ def main(args):
 
     if args.do_train and args.save_path is None:
         raise ValueError('Where do you want to save your trained model?')
+
+    args.run_timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    dataset_name = get_dataset_name(args)
+    args.log_save_path = os.path.join('logs', dataset_name)
+    args.model_save_path = os.path.join('models', dataset_name)
+    args.best_save_path = os.path.join(args.save_path, 'best') if args.save_path else None
     
     if args.save_path and not os.path.exists(args.save_path):
         os.makedirs(args.save_path)
+    if args.best_save_path:
+        os.makedirs(args.best_save_path, exist_ok=True)
+
+    os.makedirs(args.log_save_path, exist_ok=True)
+    os.makedirs(args.model_save_path, exist_ok=True)
     
     # Write logs to checkpoint and console
     set_logger(args)
@@ -266,28 +342,27 @@ def main(args):
     train_triples = read_triple(os.path.join(args.data_path, 'train.txt'), entity2id, relation2id)
     logging.info('#train: %d' % len(train_triples))
 
-    # Load valid triples with label if file exists
-    valid_w_label_path = os.path.join(args.data_path, 'valid_w_label.txt')
-    if os.path.exists(valid_w_label_path):
-        valid_triples_with_label = read_triple_with_label(valid_w_label_path, entity2id, relation2id)
-        valid_triples = [(h, r, t) for (h, r, t, label) in valid_triples_with_label if label == 1]
-        logging.info('#valid (label=1): %d' % len(valid_triples))
-    else:
-        valid_triples_with_label = None
-        valid_triples = read_triple(os.path.join(args.data_path, 'valid.txt'), entity2id, relation2id)
-        logging.info('#valid: %d' % len(valid_triples))
+    valid_triples = read_triple(os.path.join(args.data_path, 'valid.txt'), entity2id, relation2id)
+    logging.info('#valid: %d' % len(valid_triples))
+    test_triples = read_triple(os.path.join(args.data_path, 'test.txt'), entity2id, relation2id)
+    logging.info('#test: %d' % len(test_triples))
 
-    test_w_label_path = os.path.join(args.data_path, 'test_w_label.txt')
-    if os.path.exists(test_w_label_path):
-        test_triples_with_label = read_triple_with_label(test_w_label_path, entity2id, relation2id)
-        test_triples = [(h, r, t) for (h, r, t, label) in test_triples_with_label if label == 1]
-        logging.info('#test (label=1): %d' % len(test_triples))
-    else:
-        test_triples_with_label = None
-        test_triples = read_triple(os.path.join(args.data_path, 'test.txt'), entity2id, relation2id)
-        logging.info('#test: %d' % len(test_triples))
+    labeled_data_path = resolve_labeled_data_path(args)
+    valid_labeled_triples = None
+    test_labeled_triples = None
+    if labeled_data_path:
+        valid_labeled_path = os.path.join(labeled_data_path, 'valid.txt')
+        test_labeled_path = os.path.join(labeled_data_path, 'test.txt')
 
-    #All true triples (for link prediction)
+        if os.path.exists(valid_labeled_path):
+            valid_labeled_triples = read_labeled_triple(valid_labeled_path, entity2id, relation2id)
+            logging.info('#valid_labeled: %d' % len(valid_labeled_triples))
+
+        if os.path.exists(test_labeled_path):
+            test_labeled_triples = read_labeled_triple(test_labeled_path, entity2id, relation2id)
+            logging.info('#test_labeled: %d' % len(test_labeled_triples))
+    
+    #All true triples
     all_true_triples = train_triples + valid_triples + test_triples
     
     kge_model = KGEModel(
@@ -308,6 +383,7 @@ def main(args):
         kge_model = kge_model.cuda()
     
     if args.do_train:
+        train_start_time = time.time()
         # Set training dataloader iterator
         train_dataloader_head = DataLoader(
             TrainDataset(train_triples, nentity, nrelation, args.negative_sample_size, 'head-batch'), 
@@ -341,7 +417,12 @@ def main(args):
     if args.init_checkpoint:
         # Restore model from checkpoint directory
         logging.info('Loading checkpoint %s...' % args.init_checkpoint)
-        checkpoint = torch.load(os.path.join(args.init_checkpoint, 'checkpoint'))
+        checkpoint_path = os.path.join(args.init_checkpoint, 'checkpoint')
+        best_checkpoint_path = os.path.join(args.init_checkpoint, 'best', 'checkpoint')
+        if (not args.do_train) and os.path.exists(best_checkpoint_path):
+            checkpoint_path = best_checkpoint_path
+            logging.info('Using best checkpoint %s...' % checkpoint_path)
+        checkpoint = torch.load(checkpoint_path)
         init_step = checkpoint['step']
         kge_model.load_state_dict(checkpoint['model_state_dict'])
         if args.do_train:
@@ -371,6 +452,11 @@ def main(args):
 
         training_logs = []
         
+        best_valid_step = -1
+        best_valid_epoch = -1
+        best_valid_mrr = -1.0
+        validation_round = 0
+
         #Training Loop
         for step in range(init_step, args.max_steps):
             
@@ -403,9 +489,37 @@ def main(args):
                 training_logs = []
                 
             if args.do_valid and step % args.valid_steps == 0:
+                validation_round += 1
                 logging.info('Evaluating on Valid Dataset...')
-                metrics = kge_model.test_step(kge_model, valid_triples, all_true_triples, args)
-                log_metrics('Valid', step, metrics)
+                link_metrics = kge_model.test_step(kge_model, valid_triples, all_true_triples, args)
+                log_metrics('Valid Link Prediction', step, format_link_prediction_metrics(link_metrics))
+
+                current_valid_mrr = link_metrics.get('MRR')
+                if current_valid_mrr is not None and current_valid_mrr > best_valid_mrr:
+                    best_valid_mrr = current_valid_mrr
+                    best_valid_step = step
+                    best_valid_epoch = validation_round
+                    if args.best_save_path:
+                        save_variable_list = {
+                            'step': step,
+                            'current_learning_rate': current_learning_rate,
+                            'warm_up_steps': warm_up_steps,
+                            'best_valid_step': best_valid_step,
+                            'best_valid_epoch': best_valid_epoch,
+                            'best_valid_mrr': best_valid_mrr,
+                        }
+                        save_model(
+                            kge_model,
+                            optimizer,
+                            save_variable_list,
+                            args,
+                            checkpoint_dir=args.best_save_path,
+                            model_filename='%s_%s_best.mdl' % (args.run_timestamp, args.model)
+                        )
+
+                cls_metrics = evaluate_triple_classification(kge_model, valid_labeled_triples, args)
+                if cls_metrics is not None:
+                    log_metrics('Valid Triple Classification', step, cls_metrics)
         
         save_variable_list = {
             'step': step, 
@@ -413,31 +527,48 @@ def main(args):
             'warm_up_steps': warm_up_steps
         }
         save_model(kge_model, optimizer, save_variable_list, args)
+
+        training_time_sec = time.time() - train_start_time
+        logging.info('Training time (sec): %.3f' % training_time_sec)
+        if best_valid_step >= 0:
+            logging.info('Best valid epoch: %d' % best_valid_epoch)
+            logging.info('Best valid step: %d' % best_valid_step)
+            logging.info('Best valid MRR: %.6f' % best_valid_mrr)
+        else:
+            logging.info('Best valid epoch: N/A')
+            logging.info('Best valid step: N/A')
+            logging.info('Best valid MRR: N/A')
+    else:
+        logging.info('Training time (sec): 0.000')
+        logging.info('Best valid epoch: N/A')
+        logging.info('Best valid step: N/A')
+        logging.info('Best valid MRR: N/A')
         
     if args.do_valid:
         logging.info('Evaluating on Valid Dataset...')
-        metrics = kge_model.test_step(kge_model, valid_triples, all_true_triples, args)
-        log_metrics('Valid', step, metrics)
-        # Evaluate triple classification if valid_triples_with_label exists
-        if 'valid_triples_with_label' in locals() and valid_triples_with_label is not None:
-            logging.info('Evaluating triple classification on valid_w_label.txt...')
-            class_metrics = evaluate_triple_classification(kge_model, valid_triples_with_label, batch_size=args.test_batch_size, use_cuda=args.cuda)
-            log_metrics('Valid_TripleClass', step, class_metrics)
+        link_metrics = kge_model.test_step(kge_model, valid_triples, all_true_triples, args)
+        log_metrics('Valid Link Prediction', step, format_link_prediction_metrics(link_metrics))
 
+        cls_metrics = evaluate_triple_classification(kge_model, valid_labeled_triples, args)
+        if cls_metrics is not None:
+            log_metrics('Valid Triple Classification', step, cls_metrics)
+    
     if args.do_test:
         logging.info('Evaluating on Test Dataset...')
-        metrics = kge_model.test_step(kge_model, test_triples, all_true_triples, args)
-        log_metrics('Test', step, metrics)
-        # Evaluate triple classification if test_triples_with_label exists
-        if 'test_triples_with_label' in locals() and test_triples_with_label is not None:
-            logging.info('Evaluating triple classification on test_w_label.txt...')
-            class_metrics = evaluate_triple_classification(kge_model, test_triples_with_label, batch_size=args.test_batch_size, use_cuda=args.cuda)
-            log_metrics('Test_TripleClass', step, class_metrics)
+        link_metrics = kge_model.test_step(kge_model, test_triples, all_true_triples, args)
+        log_metrics('Test Link Prediction', step, format_link_prediction_metrics(link_metrics))
 
+        cls_metrics = evaluate_triple_classification(kge_model, test_labeled_triples, args)
+        if cls_metrics is not None:
+            log_metrics('Test Triple Classification', step, cls_metrics)
+    
     if args.evaluate_train:
         logging.info('Evaluating on Training Dataset...')
         metrics = kge_model.test_step(kge_model, train_triples, all_true_triples, args)
         log_metrics('Test', step, metrics)
+
+    total_runtime_sec = time.time() - total_start_time
+    logging.info('Total running time (sec): %.3f' % total_runtime_sec)
         
 if __name__ == '__main__':
     main(parse_args())
