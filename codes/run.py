@@ -1,3 +1,43 @@
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score, average_precision_score
+
+# Evaluate triple classification metrics
+def evaluate_triple_classification(model, triples_with_label, batch_size=1024, use_cuda=False):
+    '''
+    Evaluate triple classification metrics: Acc, Prec, Rec, F1, PR-AUC, ROC-AUC
+    triples_with_label: list of (h, r, t, label)
+    '''
+    y_true = []
+    y_score = []
+    model.eval()
+    with torch.no_grad():
+        for i in range(0, len(triples_with_label), batch_size):
+            batch = triples_with_label[i:i+batch_size]
+            h = torch.LongTensor([x[0] for x in batch])
+            r = torch.LongTensor([x[1] for x in batch])
+            t = torch.LongTensor([x[2] for x in batch])
+            label = [x[3] for x in batch]
+            if use_cuda:
+                h = h.cuda()
+                r = r.cuda()
+                t = t.cuda()
+            # Score: higher = more likely positive
+            score = model.forward(h, r, t, mode=None).cpu().numpy()
+            y_score.extend(score.tolist())
+            y_true.extend(label)
+    # Convert to numpy
+    y_true = np.array(y_true)
+    y_score = np.array(y_score)
+    # Use 0 threshold for binary prediction (score > 0 => 1)
+    y_pred = (y_score > 0).astype(int)
+    metrics = {
+        'Acc': accuracy_score(y_true, y_pred),
+        'Prec': precision_score(y_true, y_pred, zero_division=0),
+        'Rec': recall_score(y_true, y_pred, zero_division=0),
+        'F1': f1_score(y_true, y_pred, zero_division=0),
+        'PR-AUC': average_precision_score(y_true, y_score),
+        'ROC-AUC': roc_auc_score(y_true, y_score)
+    }
+    return metrics
 #!/usr/bin/python3
 
 from __future__ import absolute_import
@@ -116,6 +156,7 @@ def save_model(model, optimizer, save_variable_list, args):
         relation_embedding
     )
 
+
 def read_triple(file_path, entity2id, relation2id):
     '''
     Read triples and map them into ids.
@@ -125,6 +166,20 @@ def read_triple(file_path, entity2id, relation2id):
         for line in fin:
             h, r, t = line.strip().split('\t')
             triples.append((entity2id[h], relation2id[r], entity2id[t]))
+    return triples
+
+def read_triple_with_label(file_path, entity2id, relation2id):
+    '''
+    Read triples and label, map them into ids and int label.
+    Return: list of (h, r, t, label)
+    '''
+    triples = []
+    with open(file_path) as fin:
+        for line in fin:
+            parts = line.strip().split('\t')
+            if len(parts) == 4:
+                h, r, t, label = parts
+                triples.append((entity2id[h], relation2id[r], entity2id[t], int(label)))
     return triples
 
 def set_logger(args):
@@ -210,12 +265,29 @@ def main(args):
     
     train_triples = read_triple(os.path.join(args.data_path, 'train.txt'), entity2id, relation2id)
     logging.info('#train: %d' % len(train_triples))
-    valid_triples = read_triple(os.path.join(args.data_path, 'valid.txt'), entity2id, relation2id)
-    logging.info('#valid: %d' % len(valid_triples))
-    test_triples = read_triple(os.path.join(args.data_path, 'test.txt'), entity2id, relation2id)
-    logging.info('#test: %d' % len(test_triples))
-    
-    #All true triples
+
+    # Load valid triples with label if file exists
+    valid_w_label_path = os.path.join(args.data_path, 'valid_w_label.txt')
+    if os.path.exists(valid_w_label_path):
+        valid_triples_with_label = read_triple_with_label(valid_w_label_path, entity2id, relation2id)
+        valid_triples = [(h, r, t) for (h, r, t, label) in valid_triples_with_label if label == 1]
+        logging.info('#valid (label=1): %d' % len(valid_triples))
+    else:
+        valid_triples_with_label = None
+        valid_triples = read_triple(os.path.join(args.data_path, 'valid.txt'), entity2id, relation2id)
+        logging.info('#valid: %d' % len(valid_triples))
+
+    test_w_label_path = os.path.join(args.data_path, 'test_w_label.txt')
+    if os.path.exists(test_w_label_path):
+        test_triples_with_label = read_triple_with_label(test_w_label_path, entity2id, relation2id)
+        test_triples = [(h, r, t) for (h, r, t, label) in test_triples_with_label if label == 1]
+        logging.info('#test (label=1): %d' % len(test_triples))
+    else:
+        test_triples_with_label = None
+        test_triples = read_triple(os.path.join(args.data_path, 'test.txt'), entity2id, relation2id)
+        logging.info('#test: %d' % len(test_triples))
+
+    #All true triples (for link prediction)
     all_true_triples = train_triples + valid_triples + test_triples
     
     kge_model = KGEModel(
@@ -346,12 +418,22 @@ def main(args):
         logging.info('Evaluating on Valid Dataset...')
         metrics = kge_model.test_step(kge_model, valid_triples, all_true_triples, args)
         log_metrics('Valid', step, metrics)
-    
+        # Evaluate triple classification if valid_triples_with_label exists
+        if 'valid_triples_with_label' in locals() and valid_triples_with_label is not None:
+            logging.info('Evaluating triple classification on valid_w_label.txt...')
+            class_metrics = evaluate_triple_classification(kge_model, valid_triples_with_label, batch_size=args.test_batch_size, use_cuda=args.cuda)
+            log_metrics('Valid_TripleClass', step, class_metrics)
+
     if args.do_test:
         logging.info('Evaluating on Test Dataset...')
         metrics = kge_model.test_step(kge_model, test_triples, all_true_triples, args)
         log_metrics('Test', step, metrics)
-    
+        # Evaluate triple classification if test_triples_with_label exists
+        if 'test_triples_with_label' in locals() and test_triples_with_label is not None:
+            logging.info('Evaluating triple classification on test_w_label.txt...')
+            class_metrics = evaluate_triple_classification(kge_model, test_triples_with_label, batch_size=args.test_batch_size, use_cuda=args.cuda)
+            log_metrics('Test_TripleClass', step, class_metrics)
+
     if args.evaluate_train:
         logging.info('Evaluating on Training Dataset...')
         metrics = kge_model.test_step(kge_model, train_triples, all_true_triples, args)

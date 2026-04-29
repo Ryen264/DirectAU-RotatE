@@ -15,15 +15,18 @@ Models:
  - [x] ComplEx
  - [x] DistMult
 
+
 Evaluation Metrics:
 
  - [x] MRR, MR, HITS@1, HITS@3, HITS@10 (filtered)
  - [x] AUC-PR (for Countries data sets)
+ - [x] Triple classification: Acc, Prec, Rec, F1, PR-AUC, ROC-AUC (using *_w_label.txt)
 
 Loss Function:
 
  - [x] Uniform Negative Sampling
  - [x] Self-Adversarial Negative Sampling
+
 
 **Usage**
 
@@ -33,6 +36,7 @@ Knowledge Graph Data:
  - *train.txt*: the KGE model is trained to fit this data set
  - *valid.txt*: create a blank file if no validation data is available
  - *test.txt*: the KGE model is evaluated on this data set
+ - *valid_w_label.txt*, *test_w_label.txt*: (optional) each line: head\trelation\ttail\tlabel (label=1 for positive, 0 for negative). Used for triple classification metrics. If present, only triples with label=1 are used for link prediction metrics on valid/test.
 
 **Train**
 
@@ -71,6 +75,11 @@ The KGE models usually take about half an hour to run 10000 steps on a single Ge
 |-------------|-------------|-------------|-------------|-------------|-------------|
 |MAX_STEPS| 150000 | 100000 | 80000 | 80000 | 40000 | 
 |TIME| 9 h | 6 h | 4 h | 4 h | 2 h | 
+
+
+**Triple Classification Metrics**
+
+If you provide valid_w_label.txt or test_w_label.txt in your data folder, the code will automatically evaluate triple classification metrics (Accuracy, Precision, Recall, F1, PR-AUC, ROC-AUC) on these files. Only triples with label=1 are used for link prediction metrics.
 
 **Results of the RotatE model**
 
