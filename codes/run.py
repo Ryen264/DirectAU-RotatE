@@ -40,6 +40,7 @@ def parse_args(args=None):
     parser.add_argument('--countries', action='store_true', help='Use Countries S1/S2/S3 datasets')
     parser.add_argument('--regions', type=int, nargs='+', default=None, 
                         help='Region Id for Countries S1/S2/S3 datasets, DO NOT MANUALLY SET')
+    parser.add_argument('--model_type', type=str, default='entity_relation_embedding')
     
     parser.add_argument('--data_path', type=str, default=None)
     parser.add_argument('--model', default='TransE', type=str)
@@ -49,6 +50,9 @@ def parse_args(args=None):
     parser.add_argument('-n', '--negative_sample_size', default=128, type=int)
     parser.add_argument('-d', '--hidden_dim', default=500, type=int)
     parser.add_argument('-g', '--gamma', default=12.0, type=float)
+    parser.add_argument('--gamma_uni', default=1.0, type=float)
+    parser.add_argument('--gamma_neg', default=1.0, type=float)
+    parser.add_argument('--epsilon', default=1e-8, type=float)
     parser.add_argument('-adv', '--negative_adversarial_sampling', action='store_true')
     parser.add_argument('-a', '--adversarial_temperature', default=1.0, type=float)
     parser.add_argument('-b', '--batch_size', default=1024, type=int)
@@ -89,7 +93,7 @@ def override_config(args):
     # Fallbacks support older checkpoints that may not store these fields.
     args.double_entity_embedding = argparse_dict.get(
         'double_entity_embedding',
-        args.model in ['RotatE', 'ComplEx']
+        args.model in ['RotatE', 'ComplEx', 'DirectAU_RotatE']
     )
     args.double_relation_embedding = argparse_dict.get(
         'double_relation_embedding',
@@ -97,6 +101,10 @@ def override_config(args):
     )
     args.hidden_dim = argparse_dict['hidden_dim']
     args.test_batch_size = argparse_dict['test_batch_size']
+    args.model_type = argparse_dict.get('model_type', args.model_type)
+    args.gamma_uni = argparse_dict.get('gamma_uni', args.gamma_uni)
+    args.gamma_neg = argparse_dict.get('gamma_neg', args.gamma_neg)
+    args.epsilon = argparse_dict.get('epsilon', args.epsilon)
 
 
 def get_dataset_name(args):
@@ -205,6 +213,13 @@ def save_model(model, optimizer, save_variable_list, args, checkpoint_dir=None, 
         os.path.join(checkpoint_dir, 'relation_embedding'), 
         relation_embedding
     )
+
+    if hasattr(model, 'relation_mask_embedding') and model.relation_mask_embedding is not None:
+        relation_mask_embedding = model.relation_mask_embedding.detach().cpu().numpy()
+        np.save(
+            os.path.join(checkpoint_dir, 'relation_mask_embedding'),
+            relation_mask_embedding
+        )
 
     model_file = os.path.join(
         args.model_save_path,
@@ -444,11 +459,15 @@ def main(args):
     logging.info('negative_adversarial_sampling = %s' % str(args.negative_adversarial_sampling))
     if args.negative_adversarial_sampling:
         logging.info('adversarial_temperature = %f' % args.adversarial_temperature)
+    if args.model == 'DirectAU_RotatE':
+        logging.info('gamma_uni = %f' % args.gamma_uni)
+        logging.info('gamma_neg = %f' % args.gamma_neg)
+        logging.info('epsilon = %e' % args.epsilon)
     
     # Set valid dataloader as it would be evaluated during training
     
     if args.do_train:
-        logging.info('learning_rate = %d' % current_learning_rate)
+        logging.info('learning_rate = %f' % current_learning_rate)
 
         training_logs = []
         

@@ -15,6 +15,10 @@ bash run.sh train \
     [EXTRA_FLAGS]
 #
 bash run.sh train RotatE wn18rr 0 0 512 1024 500 6.0 0.5 0.00005 80000 8 -de
+# negative sampling = 1
+bash run.sh train DirectAU_RotatE wn18rr 0 0 512 1024 500 6.0 0.5 0.00005 80000 8 -de --gamma_uni 1.0 --gamma_neg 1.0 --epsilon 1e-8
+# negative sampling = 0
+bash run.sh train DirectAU_RotatE wn18rr 0 0 512 1024 500 6.0 0.5 0.00005 80000 8 -de --gamma_uni 1.0 --gamma_neg 0.0 --epsilon 1e-8
 # Best Configuration for RotatE
 #
 bash run.sh train RotatE FB15k 0 0 1024 256 1000 24.0 1.0 0.0001 150000 16 -de
