@@ -288,6 +288,52 @@ def log_metrics(mode, step, metrics):
     '''
     for metric in metrics:
         logging.info('%s %s at step %d: %f' % (mode, metric, step, metrics[metric]))
+
+
+def log_final_summary(args, link_metrics=None, cls_metrics=None, training_time_sec=0.0,
+                      total_runtime_sec=0.0, best_valid_epoch=None, best_valid_mrr=None):
+    logging.info('================ Final Result ================')
+    logging.info('Model name: %s' % args.model)
+
+    if link_metrics is not None:
+        logging.info('MR: %s' % link_metrics.get('MR', 'N/A'))
+        logging.info('MRR: %s' % link_metrics.get('MRR', 'N/A'))
+        logging.info('Hit@1: %s' % link_metrics.get('Hit@1', 'N/A'))
+        logging.info('Hit@3: %s' % link_metrics.get('Hit@3', 'N/A'))
+        logging.info('Hit@10: %s' % link_metrics.get('Hit@10', 'N/A'))
+    else:
+        logging.info('MR: N/A')
+        logging.info('MRR: N/A')
+        logging.info('Hit@1: N/A')
+        logging.info('Hit@3: N/A')
+        logging.info('Hit@10: N/A')
+
+    if cls_metrics is not None:
+        logging.info('Acc: %s' % cls_metrics.get('Accuracy', 'N/A'))
+        logging.info('Prec: %s' % cls_metrics.get('Precision', 'N/A'))
+        logging.info('Rec: %s' % cls_metrics.get('Recall', 'N/A'))
+        logging.info('F1: %s' % cls_metrics.get('F1 Score', 'N/A'))
+        logging.info('PR-AUC: %s' % cls_metrics.get('PR-AUC', 'N/A'))
+        logging.info('ROC-AUC: %s' % cls_metrics.get('ROC-AUC', 'N/A'))
+    else:
+        logging.info('Acc: N/A')
+        logging.info('Prec: N/A')
+        logging.info('Rec: N/A')
+        logging.info('F1: N/A')
+        logging.info('PR-AUC: N/A')
+        logging.info('ROC-AUC: N/A')
+
+    logging.info('Training time: %.3f sec' % training_time_sec)
+    logging.info('Total time: %.3f sec' % total_runtime_sec)
+
+    if best_valid_epoch is None or best_valid_epoch < 0:
+        logging.info('Best Valid Epoch: N/A')
+        logging.info('Best Valid MRR: N/A')
+    else:
+        logging.info('Best Valid Epoch: %d' % best_valid_epoch)
+        logging.info('Best Valid MRR: %.6f' % best_valid_mrr)
+
+    logging.info('=============================================')
         
         
 def main(args):
@@ -558,28 +604,34 @@ def main(args):
             logging.info('Best valid step: N/A')
             logging.info('Best valid MRR: N/A')
     else:
-        logging.info('Training time (sec): 0.000')
-        logging.info('Best valid epoch: N/A')
-        logging.info('Best valid step: N/A')
-        logging.info('Best valid MRR: N/A')
-        
+        training_time_sec = 0.0
+        best_valid_epoch = -1
+        best_valid_mrr = None
+
+    final_link_metrics = None
+    final_cls_metrics = None
+
     if args.do_valid:
         logging.info('Evaluating on Valid Dataset...')
         link_metrics = kge_model.test_step(kge_model, valid_triples, all_true_triples, args)
         log_metrics('Valid Link Prediction', step, format_link_prediction_metrics(link_metrics))
+        final_link_metrics = format_link_prediction_metrics(link_metrics)
 
         cls_metrics = evaluate_triple_classification(kge_model, valid_labeled_triples, args)
         if cls_metrics is not None:
             log_metrics('Valid Triple Classification', step, cls_metrics)
+            final_cls_metrics = cls_metrics
     
     if args.do_test:
         logging.info('Evaluating on Test Dataset...')
         link_metrics = kge_model.test_step(kge_model, test_triples, all_true_triples, args)
         log_metrics('Test Link Prediction', step, format_link_prediction_metrics(link_metrics))
+        final_link_metrics = format_link_prediction_metrics(link_metrics)
 
         cls_metrics = evaluate_triple_classification(kge_model, test_labeled_triples, args)
         if cls_metrics is not None:
             log_metrics('Test Triple Classification', step, cls_metrics)
+            final_cls_metrics = cls_metrics
     
     if args.evaluate_train:
         logging.info('Evaluating on Training Dataset...')
@@ -588,6 +640,16 @@ def main(args):
 
     total_runtime_sec = time.time() - total_start_time
     logging.info('Total running time (sec): %.3f' % total_runtime_sec)
+
+    log_final_summary(
+        args,
+        link_metrics=final_link_metrics,
+        cls_metrics=final_cls_metrics,
+        training_time_sec=training_time_sec if args.do_train else 0.0,
+        total_runtime_sec=total_runtime_sec,
+        best_valid_epoch=best_valid_epoch,
+        best_valid_mrr=best_valid_mrr,
+    )
         
 if __name__ == '__main__':
     main(parse_args())
