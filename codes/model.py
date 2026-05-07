@@ -559,7 +559,7 @@ class KGEModel(nn.Module):
                     'head-batch'
                 ), 
                 batch_size=args.test_batch_size,
-                num_workers=max(1, args.cpu_num//2), 
+                num_workers=min(4, max(1, args.cpu_num//2)), 
                 collate_fn=TestDataset.collate_fn
             )
 
@@ -572,7 +572,7 @@ class KGEModel(nn.Module):
                     'tail-batch'
                 ), 
                 batch_size=args.test_batch_size,
-                num_workers=max(1, args.cpu_num//2), 
+                num_workers=min(4, max(1, args.cpu_num//2)), 
                 collate_fn=TestDataset.collate_fn
             )
             
