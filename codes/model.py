@@ -58,10 +58,12 @@ class KGEModel(nn.Module):
         self.relation_mask_embedding = None
         if model_name == 'DirectAU_RotatE':
             self.relation_mask_embedding = nn.Parameter(torch.zeros(nrelation, hidden_dim))
-            nn.init.uniform_(
+            # Initialize mask to produce sigmoid outputs near 0.8-0.9 (all dims active initially)
+            # This ensures masks start near 1.0 rather than 0.5 (neutral)
+            # sigmoid(2.0) ≈ 0.88, allowing model to learn selective masking
+            nn.init.constant_(
                 tensor=self.relation_mask_embedding,
-                a=-self.embedding_range.item(),
-                b=self.embedding_range.item()
+                val=2.0
             )
         
         if model_name == 'pRotatE':
@@ -116,7 +118,9 @@ class KGEModel(nn.Module):
         relation_re, relation_im = self._relation_unit(relation_embedding)
         query_re = head_re * relation_re - head_im * relation_im
         query_im = head_re * relation_im + head_im * relation_re
-        return self._normalize_complex_pair(query_re, query_im)
+        # Do NOT normalize again after masking to preserve vector magnitude
+        # Second normalization would collapse vectors that were already scaled by mask
+        return query_re, query_im
 
     def _compose_query_from_tail(self, tail, relation_embedding, relation_ids):
         tail_re, tail_im = self._normalize_complex_embedding(tail)
@@ -127,7 +131,9 @@ class KGEModel(nn.Module):
         relation_re, relation_im = self._relation_unit(relation_embedding)
         query_re = tail_re * relation_re + tail_im * relation_im
         query_im = -tail_re * relation_im + tail_im * relation_re
-        return self._normalize_complex_pair(query_re, query_im)
+        # Do NOT normalize again after masking to preserve vector magnitude
+        # Second normalization would collapse vectors that were already scaled by mask
+        return query_re, query_im
 
     def _score_complex(self, lhs_re, lhs_im, rhs_re, rhs_im):
         return (lhs_re * rhs_re + lhs_im * rhs_im).sum(dim=-1)
@@ -383,9 +389,15 @@ class KGEModel(nn.Module):
             if pairwise_distance.numel() == 0:
                 uniformity_loss = torch.zeros(1, device=positive_sample.device).squeeze(0)
             else:
-                uniformity_loss = torch.log(
-                    torch.mean(torch.exp(-2.0 * pairwise_distance.pow(2))) + args.epsilon
-                )
+                # Improved uniformity loss with better numerical stability
+                # Clamp distances to prevent exp underflow/overflow
+                clamped_distances = torch.clamp(pairwise_distance, min=0.01, max=10.0)
+                exp_values = torch.exp(-2.0 * clamped_distances.pow(2))
+                mean_exp = torch.mean(exp_values)
+                # Apply epsilon BEFORE log to prevent log(0), use clamp for safety
+                mean_exp_safe = torch.clamp(mean_exp, min=args.epsilon)
+                uniformity_loss = torch.log(mean_exp_safe)
+                # Note: This will still be negative (log of prob < 1), but bounded
 
         if args.uni_weight:
             align_loss = align_sample_loss.mean()

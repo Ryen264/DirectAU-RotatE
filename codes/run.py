@@ -516,6 +516,7 @@ def main(args):
         logging.info('learning_rate = %f' % current_learning_rate)
 
         training_logs = []
+        training_logs_for_valid = []
         
         best_valid_step = -1
         best_valid_epoch = -1
@@ -528,6 +529,7 @@ def main(args):
             log = kge_model.train_step(kge_model, optimizer, train_iterator, args)
             
             training_logs.append(log)
+            training_logs_for_valid.append(log)
             
             if step >= warm_up_steps:
                 current_learning_rate = current_learning_rate / 10
@@ -555,6 +557,14 @@ def main(args):
                 
             if args.do_valid and step % args.valid_steps == 0:
                 validation_round += 1
+                # Log aggregated component losses for this training epoch (since last validation)
+                if len(training_logs_for_valid) > 0:
+                    epoch_metrics = {}
+                    for metric in training_logs_for_valid[0].keys():
+                        epoch_metrics[metric] = sum([l[metric] for l in training_logs_for_valid]) / len(training_logs_for_valid)
+                    log_metrics('Training epoch average', step, epoch_metrics)
+                    training_logs_for_valid = []
+
                 logging.info('Evaluating on Valid Dataset...')
                 link_metrics = kge_model.test_step(kge_model, valid_triples, all_true_triples, args)
                 log_metrics('Valid Link Prediction', step, format_link_prediction_metrics(link_metrics))
